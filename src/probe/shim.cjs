@@ -24,7 +24,6 @@
 
   // Bind originals before anything is patched, so tracing cannot trace itself.
   var appendFileSync = fs.appendFileSync.bind(fs);
-  var start = Date.now();
   var seen = Object.create(null);
   var budget = 5000;
 
@@ -41,7 +40,9 @@
           .filter(function (l) { return l.indexOf('skillcheck') === -1 && l.indexOf('node:internal') === -1; });
         frame = stack[0] || '';
       } catch (_) {}
-      appendFileSync(tracePath, JSON.stringify({ t: Date.now() - start, kind: kind, detail: detail, frame: frame }) + '\n');
+      // Absolute epoch: the child starts after the runner, so a relative clock
+      // here would attribute tool-call effects to the startup window.
+      appendFileSync(tracePath, JSON.stringify({ t: Date.now(), kind: kind, detail: detail, frame: frame }) + '\n');
     } catch (_) {}
   }
 
@@ -168,6 +169,75 @@
       try { emit('net.connect', 'fetch:' + str(input && input.url ? input.url : input)); } catch (_) {}
       return realFetch.apply(this, arguments);
     };
+  }
+
+  /* ------------------------------------------------- outbound taint check -- */
+  // Canaries are checked at write() rather than on the wire: at this point the
+  // bytes are still plaintext, so TLS does not hide an exfiltration attempt.
+  var canaries = (process.env.SKILLCHECK_CANARIES || '').split(',').filter(Boolean);
+
+  if (canaries.length > 0) {
+    var scan = function (chunk, where) {
+      try {
+        if (!chunk) return;
+        var text = typeof chunk === 'string' ? chunk
+          : Buffer.isBuffer(chunk) ? chunk.toString('utf8')
+          : chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf8')
+          : '';
+        if (!text) return;
+        for (var i = 0; i < canaries.length; i++) {
+          if (text.indexOf(canaries[i]) !== -1) {
+            emit('exfil.canary', canaries[i] + ' -> ' + where);
+          }
+        }
+      } catch (_) {}
+    };
+
+    var socketTarget = function (sock) {
+      try {
+        return (sock._host || sock.remoteAddress || sock.host || 'unknown') +
+          (sock.remotePort ? ':' + sock.remotePort : '');
+      } catch (_) { return 'unknown'; }
+    };
+
+    try {
+      var netMod = require('net');
+      if (netMod.Socket && netMod.Socket.prototype) {
+        // TLSSocket inherits write from net.Socket, so this covers https too.
+        var realWrite = netMod.Socket.prototype.write;
+        netMod.Socket.prototype.write = function (chunk) {
+          scan(chunk, socketTarget(this));
+          return realWrite.apply(this, arguments);
+        };
+      }
+    } catch (_) {}
+
+    try {
+      var httpMod = require('http');
+      if (httpMod.ClientRequest && httpMod.ClientRequest.prototype) {
+        ['write', 'end'].forEach(function (name) {
+          var real = httpMod.ClientRequest.prototype[name];
+          if (typeof real !== 'function') return;
+          httpMod.ClientRequest.prototype[name] = function (chunk) {
+            var host = (this.getHeader && this.getHeader('host')) || this.host || 'unknown';
+            scan(chunk, String(host) + (this.path || ''));
+            return real.apply(this, arguments);
+          };
+        });
+      }
+    } catch (_) {}
+
+    if (typeof globalThis.fetch === 'function') {
+      var taintedFetch = globalThis.fetch;
+      globalThis.fetch = function (input, init) {
+        try {
+          var url = str(input && input.url ? input.url : input);
+          if (init && init.body) scan(init.body, url);
+          scan(url, url);
+        } catch (_) {}
+        return taintedFetch.apply(this, arguments);
+      };
+    }
   }
 
   /* ----------------------------------------------------------- processes -- */

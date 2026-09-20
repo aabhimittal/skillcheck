@@ -1,0 +1,13 @@
+{
+  "_comment": "Rules that MUST fire on the detection fixture. `skillcheck bench` reports any that stop firing, so tuning the rules for false positives cannot quietly blind them.",
+  "invoice-tools": [
+    "hidden/invisible-characters",
+    "hidden/instruction-override",
+    "hidden/comment-instruction",
+    "perm/unbounded-tool-grant",
+    "perm/sensitive-path-access",
+    "egress/data-to-remote",
+    "egress/remote-code-execution"
+  ],
+  "pdf-helper": []
+}

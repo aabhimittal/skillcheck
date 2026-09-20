@@ -1,7 +1,8 @@
-import type { Artifact, Finding, Rule } from '../model.js';
+import type { Artifact, Confidence, Finding, Rule } from '../model.js';
 import { asList } from '../frontmatter.js';
 import { escapeEvidence } from '../util.js';
 import { scan } from './util.js';
+import { confidenceFor, discloses } from './context.js';
 
 /** Tool grants that place no bound on what the agent may run. */
 const UNBOUNDED = /^(?:Bash|Shell|Execute|Run)(?:\(\s*\*?\s*\)|\(\s*\*\s*:\s*\*\s*\))?$/i;
@@ -46,11 +47,13 @@ const wildcardCommandGrant: Rule = {
     return tools.flatMap((t) => {
       const m = risky.exec(t.trim());
       if (!m) return [];
+      const disclosed = discloses(a, [m[1]!.toLowerCase(), 'network', 'http', 'deploy', 'remote', 'upload', 'download', 'install']);
+      const confidence: Confidence = disclosed ? 'low' : 'high';
       return [{
         ruleId: 'perm/wildcard-network-grant',
         title: `Skill grants \`${m[1]}\` with unrestricted arguments`,
         severity: 'medium' as const,
-        confidence: 'high' as const,
+        confidence,
         artifactId: a.id,
         artifactName: a.name,
         file: a.files[0],
@@ -92,6 +95,13 @@ const sensitivePaths: Rule = {
       confidence: 'medium',
       only: 'model',
       max: 4,
+      skipQuoted: false,
+      // A skill whose description says it uses the operator's SSH key has a
+      // documented capability; one that says nothing has a hidden one.
+      confidenceFor: (artifact) => confidenceFor(artifact, [
+        'ssh', 'credential', 'secret', 'token', 'api key', 'keychain', 'aws',
+        '.env', 'environment variable', 'auth', 'password', 'private key',
+      ], 'medium'),
       rationale:
         'Instructions that point the agent at private keys, cloud credentials, browser cookie stores or agent config files are how a skill turns read access into account access. Some tools legitimately manage these paths; check whether this one claims to.',
       remediation: 'Confirm the skill needs the path. If it does, scope the access and say so in the description.',

@@ -12,7 +12,6 @@ import time
 _TRACE = os.environ.get("SKILLCHECK_TRACE")
 
 if _TRACE:
-    _start = time.time()
     _seen = set()
     _budget = [5000]
 
@@ -26,7 +25,8 @@ if _TRACE:
             _seen.add(key)
             _budget[0] -= 1
             line = json.dumps({
-                "t": int((time.time() - _start) * 1000),
+                # Absolute epoch; the runner rebases it against its own start.
+                "t": int(time.time() * 1000),
                 "kind": kind,
                 "detail": str(detail)[:300],
                 "frame": "",

@@ -1,6 +1,7 @@
 import type { Artifact, Finding, Rule } from '../model.js';
 import { escapeEvidence } from '../util.js';
 import { lineOf, modelSegments, scan } from './util.js';
+import { confidenceFor } from './context.js';
 
 /**
  * Text the model reads but the user does not.
@@ -11,6 +12,11 @@ import { lineOf, modelSegments, scan } from './util.js';
  * on every finding says so. Semantic injection written in ordinary prose is out
  * of reach of any matcher, which is why the probe exists.
  */
+
+/** Directional marks that real right-to-left content needs. Unlike zero-width
+ *  or tag characters they have a legitimate rendering purpose. */
+const DIRECTIONAL_MARKS = /^[\u200e\u200f\u061c]+$/;
+const RTL_SCRIPT = /[\u0590-\u05ff\u0600-\u06ff\u0700-\u074f\u0780-\u07bf\ufb1d-\ufdff\ufe70-\ufeff]/;
 
 const INVISIBLE = /[\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u206a-\u206f\ufeff]|[\u{e0000}-\u{e007f}]/gu;
 
@@ -28,21 +34,28 @@ const invisibleCharacters: Rule = {
       while ((m = re.exec(segment.text)) !== null) hits.push({ index: m.index, char: m[0] });
       if (hits.length === 0) continue;
       const first = hits[0]!;
+      // Arabic, Hebrew and Persian bundles carry LRM/RLM around interpolations;
+      // flagging those as smuggled instructions buries the real signal.
+      const onlyMarks = DIRECTIONAL_MARKS.test(hits.map((h) => h.char).join(''));
+      const legitimateBidi = onlyMarks && RTL_SCRIPT.test(segment.text);
       findings.push({
         ruleId: 'hidden/invisible-characters',
         title: 'Invisible or bidirectional control characters in model-visible text',
-        severity: 'critical',
+        severity: legitimateBidi ? 'low' : 'critical',
         // Zero-width and tag characters have no legitimate use in a tool
-        // description. There is no benign reading of this one.
-        confidence: 'high',
+        // description. Directional marks beside right-to-left script do.
+        confidence: legitimateBidi ? 'low' : 'high',
         artifactId: a.id,
         artifactName: a.name,
         file: segment.file,
         line: lineOf(segment, first.index),
         evidence: `${hits.length} hidden code point(s) in "${segment.label}", first at offset ${first.index}: ${escapeEvidence(hits.slice(0, 8).map((h) => h.char).join(''))}`,
-        rationale:
-          'These code points render as nothing in a terminal, a diff and a marketplace listing, but they are tokenised and read by the model. They are the standard carrier for instructions meant to reach the agent without reaching the reviewer.',
-        remediation: 'Strip the code points and confirm with the maintainer that the visible text is the whole text.',
+        rationale: legitimateBidi
+          ? 'Only directional marks were found, alongside right-to-left script, which is how correctly-typeset bidirectional text is written. Listed so the characters are accounted for rather than unexplained.'
+          : 'These code points render as nothing in a terminal, a diff and a marketplace listing, but they are tokenised and read by the model. They are the standard carrier for instructions meant to reach the agent without reaching the reviewer.',
+        remediation: legitimateBidi
+          ? 'No action needed if the file is a translation bundle or documents one.'
+          : 'Strip the code points and confirm with the maintainer that the visible text is the whole text.',
       });
     }
     return findings;
@@ -76,6 +89,19 @@ const instructionOverride: Rule = {
       severity: 'critical',
       confidence: 'medium',
       only: 'model',
+      // Security documentation, changelogs and detection rules quote these
+      // strings constantly; an attacker does not put them in a code fence.
+      skipQuoted: true,
+      // Detection rules, advisories and training material describe these
+      // phrasings in prose as well as in code fences. The finding stays in the
+      // report either way; disclosure decides whether it can fail a build.
+      // The trade is explicit: an artifact that claims to be security material
+      // in the surface a human reads buys a lower alarm level, and that claim
+      // is exactly what a reviewer is positioned to check.
+      confidenceFor: (artifact) => confidenceFor(artifact, [
+        'prompt injection', 'injection attack', 'attack pattern', 'detection rule',
+        'security review', 'threat', 'adversarial', 'red team', 'malicious',
+      ], 'medium'),
       rationale:
         'A skill or tool definition asking the agent to ignore prior instructions, to act without confirmation, or to keep an action from the user is an instruction aimed past the user. Confidence is medium because documentation about prompt injection contains these phrases too; read the surrounding context before acting.',
       remediation: 'Confirm the phrasing is quoted documentation rather than a live instruction. If it is live, do not install.',
@@ -88,14 +114,14 @@ const hiddenComment: Rule = {
   severity: 'high',
   kinds: ['skill'],
   check: (a) =>
-    scan(a, /<!--[\s\S]{0,600}?(?:you (?:must|should|will)|always |never |instruction|assistant|agent|ignore )[\s\S]{0,600}?-->/i, {
+    scan(a, /<!--(?=[\s\S]{0,600}?(?:\bassistant\b|\bagent\b|\bthe model\b|\bthe ai\b|\bclaude\b|\bthe user\b|ignore (?:all |any )?(?:previous|prior)|do not (?:tell|mention|reveal)|system prompt))[\s\S]{0,600}?-->/i, {
       ruleId: 'hidden/comment-instruction',
       title: 'Imperative text inside an HTML comment',
       severity: 'high',
       confidence: 'medium',
       only: 'model',
       rationale:
-        'HTML comments disappear from every rendered view of a Markdown file — the marketplace page, the GitHub preview, the docs site — while remaining in the raw text the agent loads.',
+        'The comment addresses the agent rather than a human maintainer. HTML comments disappear from every rendered view of a Markdown file — the marketplace page, the GitHub preview, the docs site — while remaining in the raw text the agent loads.',
       remediation: 'Move genuine notes into visible prose, or delete them.',
     }),
 };
@@ -106,7 +132,9 @@ const encodedPayload: Rule = {
   severity: 'medium',
   kinds: ['skill', 'mcp-server', 'mcp-tool'],
   check: (a) => [
-    ...scan(a, /(?:base64|atob|b64decode|from_?base64)[^\n]{0,40}[A-Za-z0-9+/]{60,}={0,2}/i, {
+    // A `data:image/...;base64,` prefix declares exactly what the bytes are, so
+    // it is documentation rather than concealment. Opaque blobs still count.
+    ...scan(a, /(?<!data:(?:image|font|audio|video)\/[\w.+-]{1,20};)(?:base64|atob|b64decode|from_?base64)[^\n]{0,40}[A-Za-z0-9+/]{60,}={0,2}/i, {
       ruleId: 'hidden/encoded-payload',
       title: 'Long encoded blob in model-visible text',
       severity: 'medium',

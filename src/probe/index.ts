@@ -2,12 +2,19 @@ import type { Artifact, Finding, ProbeResult, Segment } from '../model.js';
 import { rel } from '../util.js';
 import { diffBehaviour, declaredCapabilities } from './differ.js';
 import { fetchRemoteTools, runServer, type McpTool } from './runner.js';
+import { createSandbox, detectContainment } from './sandbox.js';
 
 export interface ProbeOptions {
   cwd: string;
   timeoutMs: number;
   /** Only probe servers whose name is in this list, when non-empty. */
   only: string[];
+  /** Call the advertised tools instead of only enumerating them. */
+  invoke?: boolean;
+  /** Include tools whose annotations or names imply a side effect. */
+  allowDestructive?: boolean;
+  /** Proceed with active probing outside a container. Refused by default. */
+  allowUnsandboxed?: boolean;
 }
 
 export interface ProbeOutput {
@@ -21,6 +28,25 @@ export async function probeServers(servers: Artifact[], opts: ProbeOptions): Pro
   const results: ProbeResult[] = [];
   const findings: Finding[] = [];
   const toolArtifacts: Artifact[] = [];
+
+  // Active probing runs third-party code with arguments of our choosing. That is
+  // worth doing inside something disposable and not worth doing on a laptop, so
+  // the default is to refuse rather than to warn and continue.
+  const containment = detectContainment();
+  const invoke = opts.invoke === true && (containment.contained || opts.allowUnsandboxed === true);
+  if (opts.invoke === true && !invoke) {
+    findings.push({
+      ruleId: 'probe/refused-unsandboxed',
+      title: 'Active probing was requested but refused: no container detected',
+      severity: 'info',
+      confidence: 'high',
+      artifactId: 'skillcheck',
+      artifactName: 'probe',
+      rationale:
+        `Invoking a server's tools executes its code deliberately (${containment.reason}). The probe fell back to passive enumeration rather than running an unreviewed server against this machine's real environment.`,
+      remediation: 'Re-run inside a disposable container, or pass --allow-unsandboxed to accept the risk explicitly.',
+    });
+  }
 
   for (const server of servers) {
     if (opts.only.length > 0 && !opts.only.includes(server.name)) continue;
@@ -56,14 +82,35 @@ export async function probeServers(servers: Artifact[], opts: ProbeOptions): Pro
     if (!command) continue;
 
     const args = Array.isArray(server.meta['args']) ? (server.meta['args'] as unknown[]).map(String) : [];
-    const env = (server.meta['env'] as Record<string, string> | undefined) ?? {};
-    const outcome = await runServer({ command, args, env, cwd: opts.cwd, timeoutMs: opts.timeoutMs });
+    const configEnv = (server.meta['env'] as Record<string, string> | undefined) ?? {};
+
+    // The decoy home is created for every probe, passive or active: a server
+    // that reads credentials during startup should read the fakes, not the
+    // user's real ones.
+    const sandbox = createSandbox();
+    let outcome;
+    try {
+      outcome = await runServer({
+        command,
+        args,
+        env: { ...configEnv, ...sandbox.env },
+        cwd: opts.cwd,
+        timeoutMs: opts.timeoutMs,
+        invoke,
+        allowDestructive: opts.allowDestructive,
+      });
+    } finally {
+      sandbox.dispose();
+    }
+
     const diff = diffBehaviour({
       artifactId: server.id,
       artifactName: server.name,
       file: server.files[0],
       tools: outcome.tools,
       events: outcome.events,
+      canaries: sandbox.canaries,
+      invoked: outcome.invoked,
     });
 
     results.push({
@@ -76,6 +123,7 @@ export async function probeServers(servers: Artifact[], opts: ProbeOptions): Pro
       observed: diff.observed,
       events: outcome.events,
       durationMs: outcome.durationMs,
+      invokedCount: outcome.invoked.filter((i) => i.called).length,
     });
     findings.push(...diff.findings);
 

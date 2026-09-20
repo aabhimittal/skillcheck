@@ -10,6 +10,7 @@ import { discoverServers, discoverSkills } from './discover.js';
 import { allRules } from './rules/index.js';
 import { compareSnapshots, loadSources, readState, snapshotAll, writeState } from './registry.js';
 import { renderText } from './report/text.js';
+import { bench, renderBench } from './bench.js';
 
 const HELP = `skillcheck v${VERSION} — security scanning for agent skills and MCP servers
 
@@ -21,6 +22,7 @@ COMMANDS
   pin             Record current hashes to ${LOCKFILE_NAME}
   diff            Show what changed since the pin
   watch           Poll registry sources for rug pulls and publisher changes
+  bench           Measure false positives against a corpus of trusted skills
   rules           List the rules and what they mean
   init            Write a starter ${CONFIG_NAME}
 
@@ -28,6 +30,13 @@ SCAN OPTIONS
   --probe                 Launch each MCP server under instrumentation and diff
                           observed behaviour against what it declares.
                           This executes third-party code. Use a disposable container.
+  --invoke                Also call each server's tools, in a sandbox home
+                          seeded with decoy credentials, and report any decoy
+                          that reaches a socket or a tool result.
+                          Refused outside a container unless --allow-unsandboxed.
+  --invoke-destructive    Also call tools whose annotations or names imply a
+                          side effect. Only inside a disposable container.
+  --allow-unsandboxed     Permit --invoke with no container detected.
   --probe-only <names>    Comma-separated server names to probe
   --probe-timeout <ms>    Per-server timeout (default 15000)
   --tools-from <file>     JSON map of {serverName: [toolDefinition]} to scan
@@ -39,6 +48,13 @@ SCAN OPTIONS
   --fail-confidence <c>   low | medium | high (default medium)
   --config <file>         Config file (default ${CONFIG_NAME})
   --lock <file>           Lockfile path (default ${LOCKFILE_NAME})
+
+BENCH OPTIONS
+  --corpus <dir>          Directory of skill directories (default corpus/benign).
+                          An optional expected.json in it maps skill name ->
+                          rule ids that SHOULD fire.
+  --max-fp <n>            Fail if more than n unexpected findings (default 0)
+  --count-low             Also count low-confidence findings
 
 WATCH OPTIONS
   --sources <file>        JSON list of {name, type: npm|url, spec}
@@ -91,6 +107,7 @@ async function main(): Promise<number> {
     case 'pin': return cmdPin(cwd, config, flags, lockPath);
     case 'diff': return cmdDiff(cwd, config, flags, lockPath);
     case 'watch': return cmdWatch(cwd, flags);
+    case 'bench': return cmdBench(cwd, config, flags);
     case 'rules': return cmdRules();
     case 'init': return cmdInit(cwd);
     default:
@@ -108,7 +125,8 @@ function withOverrides(config: Config, flags: Args['flags']): Config {
 }
 
 async function cmdScan(cwd: string, config: Config, flags: Args['flags'], lockPath: string): Promise<number> {
-  const probe = flags['probe'] === true || flags['probe'] === 'true';
+  const probe = flags['probe'] === true || flags['probe'] === 'true'
+    || flags['invoke'] === true || flags['invoke-destructive'] === true;
   if (probe) {
     process.stderr.write(
       'skillcheck: --probe launches each configured MCP server, which executes third-party code.\n' +
@@ -121,6 +139,9 @@ async function cmdScan(cwd: string, config: Config, flags: Args['flags'], lockPa
     probe,
     probeTimeoutMs: Number(str(flags, 'probe-timeout') ?? 15000),
     probeOnly: (str(flags, 'probe-only') ?? '').split(',').map((s) => s.trim()).filter(Boolean),
+    probeInvoke: flags['invoke'] === true || flags['invoke-destructive'] === true,
+    probeDestructive: flags['invoke-destructive'] === true,
+    probeAllowUnsandboxed: flags['allow-unsandboxed'] === true,
     lockPath,
     toolsFrom: str(flags, 'tools-from'),
     target: str(flags, 'target'),
@@ -212,6 +233,21 @@ async function cmdWatch(cwd: string, flags: Args['flags']): Promise<number> {
   };
   emit(render(result, formatOf(flags)), str(flags, 'out'));
   return findings.some((f) => f.severity === 'critical' || f.severity === 'high') ? 1 : 0;
+}
+
+function cmdBench(cwd: string, config: Config, flags: Args['flags']): number {
+  const dir = resolve(cwd, str(flags, 'corpus') ?? join('corpus', 'benign'));
+  if (!existsSync(dir)) {
+    process.stderr.write(`No corpus at ${dir}.\n`);
+    return 2;
+  }
+  const result = bench(dir, config, flags['count-low'] === true);
+  if (formatOf(flags) === 'json') emit(JSON.stringify(result, null, 2), str(flags, 'out'));
+  else emit(renderBench(result), str(flags, 'out'));
+
+  const maxFp = Number(str(flags, 'max-fp') ?? 0);
+  if (result.missed.length > 0) return 1;
+  return result.falsePositives > maxFp ? 1 : 0;
 }
 
 function cmdRules(): number {
