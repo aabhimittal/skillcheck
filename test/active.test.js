@@ -12,6 +12,28 @@ const here = dirname(fileURLToPath(import.meta.url));
 const servers = join(here, 'fixtures', 'servers');
 const repo = join(here, '..');
 
+/** Every signal detectContainment() honours, cleared together. Clearing a
+ *  subset silently re-enables invocation on whichever CI sets the other one. */
+const CONTAINMENT_ENV = ['CI', 'GITHUB_ACTIONS', 'KUBERNETES_SERVICE_HOST', 'CODESPACES', 'GITPOD_WORKSPACE_ID'];
+
+function withoutContainmentEnv(fn) {
+  const saved = Object.fromEntries(CONTAINMENT_ENV.map((k) => [k, process.env[k]]));
+  for (const k of CONTAINMENT_ENV) delete process.env[k];
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+/** True when this machine is contained for reasons no env var can undo. */
+function containedByFilesystem() {
+  return existsSync('/.dockerenv') || existsSync('/run/.containerenv');
+}
+
 function artifactFor(name, script) {
   return {
     id: `mcp:${name}`, kind: 'mcp-server', name, root: servers, files: ['.mcp.json'], segments: [],
@@ -43,20 +65,14 @@ test('the sandbox plants decoy credentials and removes them afterwards', () => {
 });
 
 test('containment detection treats an unknown environment as unsafe', () => {
-  const saved = { ci: process.env.CI, gha: process.env.GITHUB_ACTIONS, k8s: process.env.KUBERNETES_SERVICE_HOST };
-  delete process.env.CI; delete process.env.GITHUB_ACTIONS; delete process.env.KUBERNETES_SERVICE_HOST;
-  try {
-    const bare = detectContainment();
-    if (!existsSync('/.dockerenv') && !existsSync('/run/.containerenv')) {
-      assert.equal(bare.contained, false, 'fails closed when nothing identifies a disposable environment');
+  withoutContainmentEnv(() => {
+    if (!containedByFilesystem()) {
+      assert.equal(detectContainment().contained, false,
+        'fails closed when nothing identifies a disposable environment');
     }
     process.env.CI = 'true';
     assert.equal(detectContainment().contained, true);
-  } finally {
-    if (saved.ci === undefined) delete process.env.CI; else process.env.CI = saved.ci;
-    if (saved.gha === undefined) delete process.env.GITHUB_ACTIONS; else process.env.GITHUB_ACTIONS = saved.gha;
-    if (saved.k8s === undefined) delete process.env.KUBERNETES_SERVICE_HOST; else process.env.KUBERNETES_SERVICE_HOST = saved.k8s;
-  }
+  });
 });
 
 /* ------------------------------------------------- invocation policy ----- */
@@ -132,17 +148,19 @@ test('a well-behaved server stays clean when its tools are actually called', asy
   assert.equal(out.results[0].invokedCount, 1);
 });
 
-test('active probing is refused outside a container unless overridden', async () => {
-  const saved = process.env.CI;
-  delete process.env.CI;
-  try {
-    if (existsSync('/.dockerenv') || existsSync('/run/.containerenv')) return;  // genuinely contained
-    const out = await probeServers([artifactFor('thief', 'thief-server.mjs')], { ...probeOpts, invoke: true });
-    assert.ok(out.findings.some((f) => f.ruleId === 'probe/refused-unsandboxed'));
-    assert.equal(out.results[0].invokedCount, 0, 'it falls back to passive rather than running the tools');
-  } finally {
-    if (saved === undefined) delete process.env.CI; else process.env.CI = saved;
+test('active probing is refused outside a container unless overridden', async (t) => {
+  if (containedByFilesystem()) {
+    t.skip('this machine is genuinely contained, so there is nothing to refuse');
+    return;
   }
+  // probeServers resolves containment synchronously, before its first await, so
+  // clearing the environment across the call alone is enough; the variables are
+  // restored while the probe is still running.
+  const out = await withoutContainmentEnv(() =>
+    probeServers([artifactFor('thief', 'thief-server.mjs')], { ...probeOpts, invoke: true }));
+  assert.ok(out.findings.some((f) => f.ruleId === 'probe/refused-unsandboxed'),
+    out.findings.map((f) => f.ruleId).join(', '));
+  assert.equal(out.results[0].invokedCount, 0, 'it falls back to passive rather than running the tools');
 });
 
 /* ---------------------------------------------------------- corpus ------- */
