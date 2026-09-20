@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { TraceEvent } from '../model.js';
 
@@ -63,15 +63,25 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
     ...process.env,
     ...opts.env,
     SKILLCHECK_TRACE: tracePath,
-    NODE_OPTIONS: `${process.env['NODE_OPTIONS'] ?? ''} --require ${JSON.stringify(NODE_SHIM)}`.trim(),
-    PYTHONPATH: [PY_SHIM_DIR, opts.env?.['PYTHONPATH'] ?? process.env['PYTHONPATH']].filter(Boolean).join(':'),
+    NODE_OPTIONS: `${process.env['NODE_OPTIONS'] ?? ''} --require ${quoteForNodeOptions(NODE_SHIM)}`.trim(),
+    PYTHONPATH: [PY_SHIM_DIR, opts.env?.['PYTHONPATH'] ?? process.env['PYTHONPATH']].filter(Boolean).join(delimiter),
   };
 
+  // Node refuses to spawn .cmd/.bat shims directly on Windows, and the usual MCP
+  // launcher there (`npx`) is one. The command and its arguments come from the
+  // config this tool is about to execute anyway, so routing them through cmd.exe
+  // grants nothing that launching the server did not — but cmd.exe re-splits the
+  // line, so every argument has to be quoted back together first.
+  const useShell = process.platform === 'win32';
   let child: ChildProcessWithoutNullStreams;
   try {
-    child = spawn(opts.command, opts.args, { cwd: opts.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    child = spawn(
+      useShell ? winQuote(opts.command) : opts.command,
+      useShell ? opts.args.map(winQuote) : opts.args,
+      { cwd: opts.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], shell: useShell },
+    );
   } catch (err) {
-    rmSync(dir, { recursive: true, force: true });
+    discard(dir);
     return { ok: false, error: `spawn failed: ${(err as Error).message}`, tools: [], events: [], phases: [], durationMs: 0, stderr: '', instrumented: false };
   }
 
@@ -160,7 +170,7 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
   clearTimeout(killer);
 
   const events = readTrace(tracePath, phases);
-  rmSync(dir, { recursive: true, force: true });
+  discard(dir);
 
   return {
     ok,
@@ -172,6 +182,30 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
     stderr,
     instrumented: events.some((e) => (e.kind as string) === 'probe.ready'),
   };
+}
+
+/**
+ * Node's NODE_OPTIONS parser respects quotes but performs no backslash
+ * unescaping, so a JSON-quoted Windows path arrives with its separators
+ * doubled and the `--require` fails. Forward slashes are accepted on every
+ * platform, which sidesteps the problem entirely.
+ */
+function quoteForNodeOptions(path: string): string {
+  return `"${path.replace(/\\/g, '/')}"`;
+}
+
+/** Quote a token so cmd.exe reassembles it as one argument. Paths containing a
+ *  space ("C:\\Program Files\\…") are the common case. */
+function winQuote(token: string): string {
+  return /[\s"&|<>^()]/.test(token) ? `"${token.replace(/"/g, '""')}"` : token;
+}
+
+/** A probed server can still hold the trace file open on Windows; a failed
+ *  cleanup of a temp directory must never fail the probe. */
+function discard(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  } catch { /* the OS will reclaim it */ }
 }
 
 function readTrace(path: string, phases: RunOutcome['phases']): TraceEvent[] {

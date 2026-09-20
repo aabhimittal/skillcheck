@@ -50,16 +50,23 @@ function safeDirs(dir: string): string[] {
 
 export function discoverSkills(cwd: string, extraPaths: string[] = []): Artifact[] {
   const artifacts: Artifact[] = [];
-  const seen = new Set<string>();
+  const seenDir = new Set<string>();
+  const seenId = new Set<string>();
   for (const root of skillRoots(cwd, extraPaths)) {
     for (const name of safeDirs(root)) {
-      const dir = join(root, name);
+      const dir = resolve(root, name);
       const skillMd = join(dir, 'SKILL.md');
       if (!existsSync(skillMd)) continue;
-      if (seen.has(dir)) continue;
-      seen.add(dir);
+      if (seenDir.has(dir)) continue;
+      seenDir.add(dir);
       const a = loadSkill(cwd, dir, skillMd);
-      if (a) artifacts.push(a);
+      if (!a) continue;
+      // Roots are ordered nearest-first, so the project copy of a skill wins
+      // over a same-named one in the home directory -- which is also how an
+      // agent resolves it. The same root reached by two paths collapses here too.
+      if (seenId.has(a.id)) continue;
+      seenId.add(a.id);
+      artifacts.push(a);
     }
   }
   return artifacts;

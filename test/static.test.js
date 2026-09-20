@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readFileSync, readdirSync } from 'node:fs';
 import {
   discoverSkills, discoverServers, runRules, defaultConfig, computeSurfaces,
   buildLock, diffAgainstLock, applySuppressions, render,
@@ -134,4 +135,17 @@ test('evidence never reproduces invisible characters verbatim', () => {
   assert.ok(finding);
   assert.doesNotMatch(finding.evidence, /[​-‏⁠-⁯]/);
   assert.match(finding.evidence, /\\u200b/);
+});
+
+test('every test file is listed in the npm test script', () => {
+  // `node --test` is given an explicit file list because PowerShell does not
+  // expand globs and bare `--test` would treat the fixture servers as tests.
+  // That list can silently fall behind, which is what this guards.
+  const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
+  const script = pkg.scripts.test;
+  const files = readdirSync(here).filter((f) => f.endsWith('.test.js'));
+  assert.ok(files.length > 0);
+  for (const f of files) {
+    assert.ok(script.includes(`test/${f}`), `package.json test script is missing test/${f}`);
+  }
 });

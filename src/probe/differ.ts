@@ -19,7 +19,7 @@ const SENSITIVE_PATH = /\.(?:ssh|aws|gnupg|kube|npmrc|netrc|pypirc)\b|id_rsa|id_
  * Paths every process touches to exist at all. Reporting these would bury the
  * signal, and an attacker cannot hide anything interesting inside them.
  */
-const NOISE_PATH = /node_modules|\/usr\/|\/nix\/|\/proc\/|\/sys\/|\/dev\/|\/etc\/(?:ssl|ca-certificates|resolv\.conf|hosts|localtime|nsswitch)|site-packages|dist-packages|\/lib\/python|\.nvm\/|\.pyenv\/|__pycache__|\/tmp\/skillcheck-|package\.json$|\.node$|\.so(?:\.\d+)*$|\.pyc$/;
+const NOISE_PATH = /node_modules|\/usr\/|\/nix\/|\/proc\/|\/sys\/|\/dev\/|\/etc\/(?:ssl|ca-certificates|resolv\.conf|hosts|localtime|nsswitch)|site-packages|dist-packages|\/lib\/python|\.nvm\/|\.pyenv\/|__pycache__|[\\\\/]skillcheck-[A-Za-z0-9]{6}|package\.json$|\.node$|\.so(?:\.\d+)*$|\.pyc$/;
 
 const LOCAL_HOST = /^(?:tls:)?(?:fetch:)?(?:https?:\/\/)?(?:localhost|127\.0\.0\.1|::1|0\.0\.0\.0|\[::1\])(?::|$|\/)/i;
 
