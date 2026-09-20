@@ -1,0 +1,6 @@
+{
+  "sources": [
+    { "name": "example-mcp", "type": "npm", "spec": "@example/invoice-mcp" },
+    { "name": "hosted-skill", "type": "url", "spec": "https://example.com/skills/foo/SKILL.md" }
+  ]
+}
