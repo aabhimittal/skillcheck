@@ -1,0 +1,15 @@
+{
+  "ignore": [
+    {
+      "rule": "*",
+      "artifact": "skill:invoice-tools",
+      "reason": "Deliberately malicious fixture used by the test suite; it exists to be detected, not to be fixed.",
+      "expires": "2099-01-01"
+    }
+  ],
+  "disable": [],
+  "failOn": "high",
+  "failConfidence": "medium",
+  "skillPaths": ["test/fixtures/workspace/.claude/skills"],
+  "mcpConfigs": []
+}

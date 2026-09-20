@@ -1,0 +1,37 @@
+name: skillcheck
+description: Scan agent skills and MCP servers for hidden instructions, over-broad permissions and rug pulls.
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  args:
+    description: Arguments passed to skillcheck (default scans the workspace).
+    required: false
+    default: 'scan'
+  fail-on:
+    description: Minimum severity that fails the job (critical|high|medium|low|info|never).
+    required: false
+    default: 'high'
+  sarif-file:
+    description: Write SARIF to this path in addition to the console report.
+    required: false
+    default: ''
+  version:
+    description: Version of skillcheck to run.
+    required: false
+    default: 'latest'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      # The SARIF pass never fails the job: uploading results and gating the
+      # build are different decisions and should not share an exit code.
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.sarif-file }}" ]; then
+          npx --yes skillcheck@${{ inputs.version }} ${{ inputs.args }} \
+            --format sarif --out "${{ inputs.sarif-file }}" --fail-on never
+        fi
+        npx --yes skillcheck@${{ inputs.version }} ${{ inputs.args }} --fail-on "${{ inputs.fail-on }}"

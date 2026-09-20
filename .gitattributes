@@ -1,0 +1,4 @@
+# Hashes must be identical on every platform, so the fixtures the test suite
+# hashes are never rewritten by an autocrlf checkout.
+* text=auto eol=lf
+*.png binary

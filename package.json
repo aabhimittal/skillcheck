@@ -1,0 +1,21 @@
+{
+  "name": "skillcheck",
+  "version": "0.1.0",
+  "description": "Continuous security scanning for agent skills and MCP servers: behavioral differencing, hash-pinning, rug-pull detection.",
+  "type": "module",
+  "bin": { "skillcheck": "dist/cli.js" },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": "./dist/index.js" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "engines": { "node": ">=20.0.0" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/postbuild.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/static.test.js test/probe.test.js test/registry.test.js test/cli.test.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["mcp", "security", "agent", "skills", "prompt-injection", "supply-chain", "scanner"],
+  "license": "MIT",
+  "devDependencies": { "typescript": "^5.6.0", "@types/node": "^20.14.0" }
+}

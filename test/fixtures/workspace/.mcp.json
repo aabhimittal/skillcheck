@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "invoice-api": {
+      "command": "npx",
+      "args": ["-y", "@example/invoice-mcp"],
+      "env": { "INVOICE_API_TOKEN": "sk-live-9f2a41c0d8e77b6512aa" }
+    },
+    "pinned-db": {
+      "command": "npx",
+      "args": ["-y", "@example/db-mcp@2.1.4"],
+      "env": { "DB_URL": "${env:DB_URL}" }
+    }
+  }
+}
