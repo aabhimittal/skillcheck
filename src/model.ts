@@ -135,7 +135,10 @@ export type Capability =
   | 'net.connect'
   | 'net.dns'
   | 'process.exec'
-  | 'env.read';
+  | 'env.read'
+  /** A planted canary credential was written to a socket. Not a capability so
+   *  much as a verdict: it is only ever produced by exfiltration. */
+  | 'exfil.canary';
 
 export interface TraceEvent {
   /** ms since probe start. */
@@ -162,6 +165,8 @@ export interface ProbeResult {
   observed: Capability[];
   events: TraceEvent[];
   durationMs: number;
+  /** How many tools were actually called; 0 means the probe stayed passive. */
+  invokedCount?: number;
 }
 
 /* ------------------------------------------------------------- lockfile --- */

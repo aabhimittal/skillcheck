@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { TraceEvent } from '../model.js';
+import { decideInvoke, synthesiseArgs } from './invoke.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const NODE_SHIM = join(here, 'shim.cjs');
@@ -23,6 +24,17 @@ export interface McpTool {
   };
 }
 
+export interface InvokedTool {
+  name: string;
+  called: boolean;
+  /** Why the tool was not called, when it was not. */
+  skipped?: string;
+  ok?: boolean;
+  error?: string;
+  /** Flattened text of the tool's result, scanned for planted canaries. */
+  resultText?: string;
+}
+
 export interface RunOutcome {
   ok: boolean;
   error?: string;
@@ -33,6 +45,7 @@ export interface RunOutcome {
   durationMs: number;
   stderr: string;
   instrumented: boolean;
+  invoked: InvokedTool[];
 }
 
 export interface RunOptions {
@@ -41,6 +54,10 @@ export interface RunOptions {
   env?: Record<string, string>;
   cwd: string;
   timeoutMs: number;
+  /** Call the tools the server advertises, not just enumerate them. */
+  invoke?: boolean;
+  /** Also call tools whose annotations or names imply a side effect. */
+  allowDestructive?: boolean;
 }
 
 /**
@@ -82,7 +99,7 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
     );
   } catch (err) {
     discard(dir);
-    return { ok: false, error: `spawn failed: ${(err as Error).message}`, tools: [], events: [], phases: [], durationMs: 0, stderr: '', instrumented: false };
+    return { ok: false, error: `spawn failed: ${(err as Error).message}`, tools: [], events: [], phases: [], durationMs: 0, stderr: '', instrumented: false, invoked: [] };
   }
 
   let stderr = '';
@@ -141,6 +158,7 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
   let ok = false;
   let error: string | undefined;
   let tools: McpTool[] = [];
+  const invoked: InvokedTool[] = [];
 
   try {
     const startupFrom = 0;
@@ -157,6 +175,29 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
     tools = result?.tools ?? [];
     mark('enumerate', enumFrom);
     ok = true;
+
+    if (opts.invoke) {
+      for (const tool of tools) {
+        const decision = decideInvoke(tool, opts.allowDestructive === true);
+        if (!decision.invoke) {
+          invoked.push({ name: tool.name, called: false, skipped: decision.reason });
+          continue;
+        }
+        const from = Date.now() - started;
+        try {
+          const res = await call('tools/call', {
+            name: tool.name,
+            arguments: synthesiseArgs(tool.inputSchema),
+          }, opts.timeoutMs);
+          invoked.push({ name: tool.name, called: true, ok: true, resultText: flatten(res) });
+        } catch (err) {
+          // A tool that rejects the synthesised arguments still ran its own
+          // argument handling, so the trace for this phase is kept either way.
+          invoked.push({ name: tool.name, called: true, ok: false, error: (err as Error).message });
+        }
+        mark(`call:${tool.name}`, from);
+      }
+    }
   } catch (err) {
     error = (err as Error).message;
     if (exitedEarly) error += ` (server exited; stderr: ${stderr.trim().split('\n').slice(-3).join(' / ')})`;
@@ -169,7 +210,7 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
   await Promise.race([exited, new Promise((r) => setTimeout(r, 2500).unref?.())]);
   clearTimeout(killer);
 
-  const events = readTrace(tracePath, phases);
+  const events = readTrace(tracePath, phases, started);
   discard(dir);
 
   return {
@@ -181,7 +222,17 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
     durationMs: Date.now() - started,
     stderr,
     instrumented: events.some((e) => (e.kind as string) === 'probe.ready'),
+    invoked,
   };
+}
+
+/** Collapse an MCP tool result into plain text for canary scanning. */
+function flatten(result: unknown): string {
+  try {
+    return JSON.stringify(result).slice(0, 20000);
+  } catch {
+    return String(result).slice(0, 20000);
+  }
 }
 
 /**
@@ -208,7 +259,7 @@ function discard(dir: string): void {
   } catch { /* the OS will reclaim it */ }
 }
 
-function readTrace(path: string, phases: RunOutcome['phases']): TraceEvent[] {
+function readTrace(path: string, phases: RunOutcome['phases'], startedEpoch: number): TraceEvent[] {
   let raw = '';
   try { raw = readFileSync(path, 'utf8'); } catch { return []; }
   const out: TraceEvent[] = [];
@@ -216,6 +267,7 @@ function readTrace(path: string, phases: RunOutcome['phases']): TraceEvent[] {
     if (!line.trim()) continue;
     try {
       const e = JSON.parse(line) as TraceEvent;
+      e.t = Math.max(0, e.t - startedEpoch);
       e.phase = phases.find((p) => e.t >= p.from && e.t <= p.to)?.name ?? 'startup';
       out.push(e);
     } catch { /* truncated final write */ }

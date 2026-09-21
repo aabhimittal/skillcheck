@@ -19,6 +19,9 @@ export interface ScanOptions {
   probe: boolean;
   probeTimeoutMs: number;
   probeOnly: string[];
+  probeInvoke?: boolean;
+  probeDestructive?: boolean;
+  probeAllowUnsandboxed?: boolean;
   lockPath?: string;
   /** Path to a JSON file of tool definitions, for CI without a live server. */
   toolsFrom?: string;
@@ -48,6 +51,9 @@ export async function scan(opts: ScanOptions): Promise<ScanResult> {
       cwd: opts.cwd,
       timeoutMs: opts.probeTimeoutMs,
       only: opts.probeOnly,
+      invoke: opts.probeInvoke,
+      allowDestructive: opts.probeDestructive,
+      allowUnsandboxed: opts.probeAllowUnsandboxed,
     });
     probes.push(...out.results);
     findings.push(...out.findings);

@@ -1,5 +1,6 @@
 import type { Artifact, Confidence, Finding, Segment, Severity } from '../model.js';
 import { escapeEvidence } from '../util.js';
+import { isQuoted, quotedRangesOf } from './context.js';
 
 export interface MatchSpec {
   ruleId: string;
@@ -12,6 +13,13 @@ export interface MatchSpec {
   only?: 'model' | 'user';
   /** Cap findings per artifact; repeated hits of the same rule add nothing. */
   max?: number;
+  /**
+   * Ignore matches inside fenced code, inline code and blockquotes. Set for
+   * rules about what a document *instructs*, not what it *demonstrates*.
+   */
+  skipQuoted?: boolean;
+  /** Override the spec's confidence per artifact, e.g. when disclosed. */
+  confidenceFor?: (a: Artifact) => Confidence;
 }
 
 export function lineOf(segment: Segment, index: number): number {
@@ -27,6 +35,7 @@ export function modelSegments(a: Artifact): Segment[] {
 
 export function scan(a: Artifact, pattern: RegExp, spec: MatchSpec): Finding[] {
   const findings: Finding[] = [];
+  const seen = new Set<string>();
   const max = spec.max ?? 3;
   const segments = a.segments.filter((s) => {
     if (spec.only === 'model') return s.visibility === 'model' || s.visibility === 'both';
@@ -36,18 +45,26 @@ export function scan(a: Artifact, pattern: RegExp, spec: MatchSpec): Finding[] {
 
   for (const segment of segments) {
     const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g');
+    const quoted = spec.skipQuoted ? quotedRangesOf(segment) : [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(segment.text)) !== null) {
       if (m[0].length === 0) { re.lastIndex++; continue; }
+      if (spec.skipQuoted && isQuoted(quoted, m.index)) continue;
+      const line = lineOf(segment, m.index);
+      // The same text can appear in two segments of one file (front-matter and
+      // description both carry it); one location is one finding.
+      const key = `${segment.file}:${line}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       findings.push({
         ruleId: spec.ruleId,
         title: spec.title,
         severity: spec.severity,
-        confidence: spec.confidence,
+        confidence: spec.confidenceFor ? spec.confidenceFor(a) : spec.confidence,
         artifactId: a.id,
         artifactName: a.name,
         file: segment.file,
-        line: lineOf(segment, m.index),
+        line,
         evidence: escapeEvidence(context(segment.text, m.index, m[0].length)),
         rationale: typeof spec.rationale === 'function' ? spec.rationale(m, segment) : spec.rationale,
         remediation: spec.remediation,

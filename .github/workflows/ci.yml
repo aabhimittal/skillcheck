@@ -22,6 +22,21 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+  corpus:
+    # Both directions of the accuracy guard: no false positives on skills that
+    # should be clean, and no rule that has quietly stopped firing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm ci && npm run build
+      - name: False positives on the benign corpus
+        run: node dist/cli.js bench --corpus corpus/benign --max-fp 0
+      - name: Detection has not regressed
+        run: node dist/cli.js bench --corpus test/fixtures/workspace/.claude/skills
+
   self-scan:
     # skillcheck scans its own repository, including its deliberately malicious
     # fixtures, so a regression in the rules shows up as a change in this output.
