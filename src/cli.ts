@@ -8,7 +8,7 @@ import { render, FORMATS, type Format } from './report/index.js';
 import { buildLock, diffAgainstLock, entryFor, readLock, writeLock, LOCKFILE_NAME } from './lock.js';
 import { discoverServers, discoverSkills } from './discover.js';
 import { allRules } from './rules/index.js';
-import { compareSnapshots, loadSources, readState, snapshotAll, writeState } from './registry.js';
+import { compareSnapshots, discoverNpm, loadSources, readState, snapshotAll, writeState } from './registry.js';
 import { renderText } from './report/text.js';
 import { bench, renderBench } from './bench.js';
 
@@ -22,6 +22,7 @@ COMMANDS
   pin             Record current hashes to ${LOCKFILE_NAME}
   diff            Show what changed since the pin
   watch           Poll registry sources for rug pulls and publisher changes
+  discover        Build a watch source list from an npm registry search
   bench           Measure false positives against a corpus of trusted skills
   rules           List the rules and what they mean
   init            Write a starter ${CONFIG_NAME}
@@ -107,6 +108,7 @@ async function main(): Promise<number> {
     case 'pin': return cmdPin(cwd, config, flags, lockPath);
     case 'diff': return cmdDiff(cwd, config, flags, lockPath);
     case 'watch': return cmdWatch(cwd, flags);
+    case 'discover': return cmdDiscover(cwd, flags);
     case 'bench': return cmdBench(cwd, config, flags);
     case 'rules': return cmdRules();
     case 'init': return cmdInit(cwd);
@@ -248,6 +250,19 @@ function cmdBench(cwd: string, config: Config, flags: Args['flags']): number {
   const maxFp = Number(str(flags, 'max-fp') ?? 0);
   if (result.missed.length > 0) return 1;
   return result.falsePositives > maxFp ? 1 : 0;
+}
+
+async function cmdDiscover(cwd: string, flags: Args['flags']): Promise<number> {
+  const query = str(flags, 'query') ?? 'keywords:mcp-server';
+  const outPath = resolve(cwd, str(flags, 'out') ?? 'skillcheck-sources.json');
+  const found = await discoverNpm(query, Number(str(flags, 'size') ?? 50));
+  const existing = loadSources(outPath);
+  const byName = new Map(existing.map((x) => [x.name, x]));
+  let added = 0;
+  for (const src of found) if (!byName.has(src.name)) { byName.set(src.name, src); added++; }
+  writeFileSync(outPath, JSON.stringify({ sources: [...byName.values()] }, null, 2) + '\n', 'utf8');
+  process.stdout.write(`${found.length} found for "${query}", ${added} new; ${byName.size} sources in ${outPath}\n`);
+  return 0;
 }
 
 function cmdRules(): number {

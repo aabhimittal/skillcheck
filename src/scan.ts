@@ -67,9 +67,10 @@ export async function scan(opts: ScanOptions): Promise<ScanResult> {
   if (lock) {
     // Tool artifacts only exist when a probe ran; diffing them against a lock
     // built with a probe would otherwise report every tool as removed.
-    const comparable = lock.entries && Object.values(lock.entries).some((e) => e.kind === 'mcp-tool')
-      ? artifacts
-      : artifacts.filter((a) => a.kind !== 'mcp-tool');
+    const probed = new Set(['mcp-tool', 'mcp-prompt', 'mcp-resource']);
+    const lockHasProbe = Object.values(lock.entries).some((e) => probed.has(e.kind));
+    const comparable = artifacts.filter((a) =>
+      a.kind !== 'mcp-output' && (lockHasProbe || !probed.has(a.kind)));
     findings.push(...diffAgainstLock(comparable, lock));
   }
 
