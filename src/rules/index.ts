@@ -1,4 +1,5 @@
 import type { Artifact, Finding, Rule, ScanContext } from '../model.js';
+import { MCP_TEXT_KINDS } from '../model.js';
 import { hiddenRules } from './hidden.js';
 import { permissionRules } from './permissions.js';
 import { egressRules } from './egress.js';
@@ -11,7 +12,9 @@ export function runRules(artifacts: Artifact[], ctx: ScanContext): Finding[] {
   for (const a of artifacts) {
     for (const rule of allRules) {
       if (disabled.has(rule.id)) continue;
-      if (!rule.kinds.includes(a.kind)) continue;
+      // Prompts, resources and tool outputs share the tool rule set.
+      const kind = MCP_TEXT_KINDS.has(a.kind) ? 'mcp-tool' : a.kind;
+      if (!rule.kinds.includes(kind)) continue;
       try {
         findings.push(...rule.check(a, ctx));
       } catch (err) {

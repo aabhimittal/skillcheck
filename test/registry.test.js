@@ -59,3 +59,35 @@ test('monitored URL content changes are reported', () => {
   assert.ok(f);
   assert.equal(f.severity, 'high');
 });
+
+const withSupplyChain = {
+  ...base,
+  latestDeps: { zod: '^3.0.0' },
+  latestInstallScripts: [],
+  latestProvenance: true,
+};
+
+test('losing provenance on a new release is flagged; never having it is not', () => {
+  const next = { ...withSupplyChain, latest: '1.3.0', latestProvenance: false };
+  const f = compareSnapshots(withSupplyChain, next).find((x) => x.ruleId === 'registry/provenance-dropped');
+  assert.ok(f);
+  assert.equal(f.severity, 'high');
+
+  const neverHad = { ...withSupplyChain, latestProvenance: false };
+  assert.ok(!ids(compareSnapshots(neverHad, { ...neverHad, latest: '1.3.0' })).includes('registry/provenance-dropped'),
+    'most packages predate provenance; its absence alone is not a signal');
+});
+
+test('a new install-time script is flagged', () => {
+  const next = { ...withSupplyChain, latest: '1.3.0', latestInstallScripts: ['postinstall'] };
+  const f = compareSnapshots(withSupplyChain, next).find((x) => x.ruleId === 'registry/install-script-added');
+  assert.ok(f);
+  assert.match(f.title, /postinstall/);
+});
+
+test('a new dependency is surfaced as supply chain one level down', () => {
+  const next = { ...withSupplyChain, latest: '1.3.0', latestDeps: { zod: '^3.0.0', 'left-pad': '1.0.0' } };
+  const f = compareSnapshots(withSupplyChain, next).find((x) => x.ruleId === 'registry/dependency-added');
+  assert.ok(f);
+  assert.match(f.title, /left-pad/);
+});

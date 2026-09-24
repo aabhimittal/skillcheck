@@ -2,6 +2,9 @@
 
 Continuous security scanning for agent skills and MCP servers.
 
+See it work end to end — `bash examples/demo.sh` — on a benign local server
+carrying one planted zero-width space.
+
 ```
 npx skillcheck                  # scan what is installed
 npx skillcheck pin              # record hashes of what you reviewed
@@ -58,7 +61,19 @@ CRITICAL Tool "describe" returned a planted credential in its result
 ```
 
 The decoys are never real secrets, so this is safe to run against a hostile
-server. Which tools get called is decided fail-closed: a tool is invoked only
+server. Their values are shaped like the credential they replace (`ghp_…`,
+`AKIA…`) with no `skillcheck` marker, and the shim deletes the token list from
+the environment before the server runs, so a server cannot detect the probe by
+searching for its own bait.
+
+**All four model-visible MCP surfaces, not just tools.** A probe enumerates
+`prompts/list` and `resources/list` alongside `tools/list`, renders argument-free
+prompts and reads resource contents, and — under `--invoke` — scans every tool
+result. A prompt template is injected into the context verbatim when selected;
+resource contents and tool outputs reach it too. All four now run under the same
+rule set. Static definitions (tool, prompt, resource) are pinned; dynamic
+outputs (results, resource contents) are scanned but never pinned, since they
+change per call. Which tools get called is decided fail-closed: a tool is invoked only
 when `readOnlyHint: true`, never merely because it failed to look dangerous, and
 tools with no annotations at all are skipped and reported as unmeasured.
 `--invoke` is **refused outside a container** unless you pass
@@ -79,11 +94,15 @@ tool definitions as executable code. If that is true, they belong in a lockfile.
 scan reports what moved and which files moved, separating a silent rewrite
 (critical) from an acknowledged version bump (low).
 
-**Continuous registry monitoring (`skillcheck watch`).** Polls sources on a
-schedule and compares snapshots. The high-value signals are not in any single
-scan: a *published version whose content hash changed* (a republish — critical),
-a *publisher added to an established package* (the visible half of an account
-takeover — high), an unpublish, a deprecation.
+**Continuous registry monitoring (`skillcheck watch` / `discover`).** `discover`
+builds the source list from an npm search (`keywords:mcp-server`) rather than by
+hand; `watch` polls and diffs snapshots. The high-value signals are not in any
+single scan: a *republished version* (content hash of an existing version changed
+— critical), a *dropped provenance attestation* (a release built outside the
+pipeline that signed the last one — high), a *new install-time script*
+(`postinstall` runs before any review — high), a *publisher added* to an
+established package (high), a *new dependency* (supply chain one level down —
+medium), an unpublish, a deprecation.
 
 **Static checks (the loss-leader).** Invisible and bidirectional control
 characters, instructions hidden in HTML comments, imperative text inside JSON
@@ -133,8 +152,11 @@ skill that legitimately uses `~/.ssh`, an i18n skill containing real
 bidirectional marks, a fixture file with an embedded base64 PNG, an `.env`
 manager, wildcard `git`/`curl` grants.
 
-The first run over that corpus produced **15 findings across 6 of 10 skills**.
-Every one was a false positive. They were fixed by principle, not by exception:
+The first run over that corpus produced **15 findings across 6 of 10 skills**,
+every one a false positive; then, run against the 19 real skills in
+`anthropics/skills` (which I did not write), **4 more across 2 skills** — two
+rules that fired on `curl` in documentation and on any skill that merely
+mentioned the network. They were fixed by principle, not by exception:
 
 | pattern | fix |
 |---|---|
@@ -144,10 +166,15 @@ Every one was a false positive. They were fixed by principle, not by exception:
 | bidirectional marks in RTL text | LRM/RLM beside right-to-left script is typography; zero-width and tag characters stay critical |
 | embedded `data:image/png;base64,` | a self-describing data URI declares its own contents; opaque blobs still count |
 
-Current rate on that corpus: **0 findings across 10 skills** at build-failing
-confidence. Ten skills is a small corpus and I would not claim more from it than
-it can carry — point `bench` at your own directory, and open an issue with the
-skill if something fires wrongly.
+Both were fixed by principle: the shell-exfiltration rule now matches only in
+fenced code, in command position, with a substitution that actually reads local
+data (`$(cat …)`, not `?id=$X`); and the network/shell surface-mismatch probes
+were deleted after measurement showed they carried no signal on real skills.
+
+Current rate: **0 findings at build-failing confidence** across all three
+corpora — my 10, the 19 real ones, and the detection fixture (whose 8 planted
+findings all still fire). Twenty-nine real skills is still small; point `bench`
+at your own directory, and open an issue if something fires wrongly.
 
 The reverse regression matters just as much. `bench` reads an optional
 `expected.json` mapping a skill to the rules that *must* fire for it, and reports
@@ -227,7 +254,8 @@ Commit the state file; the diff between runs *is* the alert.
 | `scan` | Scan installed skills and MCP servers. `--probe` adds behavioural differencing; `--invoke` adds active probing with decoys. |
 | `pin` | Write `skillcheck.lock.json`. |
 | `diff` | Show what changed since the pin, and in which files. |
-| `watch` | Poll registry sources for republishes and publisher changes. |
+| `watch` | Poll registry sources for republishes, provenance loss, install scripts and publisher changes. |
+| `discover` | Build a watch source list from an npm registry search. |
 | `bench` | Measure false positives against a corpus of trusted skills. |
 | `rules` | List every rule, its severity and what it means. |
 | `init` | Write a starter config. |

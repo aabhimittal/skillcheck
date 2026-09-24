@@ -34,6 +34,12 @@ export interface Snapshot {
   hashes: Record<string, string>;
   maintainers?: string[];
   deprecated?: string;
+  /** Dependencies of the latest version: the supply chain one level down. */
+  latestDeps?: Record<string, string>;
+  /** Lifecycle scripts that run on `npm install`: code that executes before any review. */
+  latestInstallScripts?: string[];
+  /** Whether the latest version carries an npm provenance attestation. */
+  latestProvenance?: boolean;
   error?: string;
 }
 
@@ -56,17 +62,29 @@ export function writeState(path: string, state: RegistryState): void {
   writeFileSync(path, JSON.stringify(state, null, 2) + '\n', 'utf8');
 }
 
+const INSTALL_SCRIPTS = ['preinstall', 'install', 'postinstall'];
+
 export async function takeSnapshot(source: Source, timeoutMs = 15000): Promise<Snapshot> {
   const base: Snapshot = { name: source.name, type: source.type, fetchedAt: new Date().toISOString(), hashes: {} };
   try {
     if (source.type === 'npm') {
       const doc = await getJson(`https://registry.npmjs.org/${encodeURIComponent(source.spec).replace('%40', '@')}`, timeoutMs);
-      const versions = (doc['versions'] ?? {}) as Record<string, { dist?: { integrity?: string; shasum?: string } }>;
+      const versions = (doc['versions'] ?? {}) as Record<string, {
+        dist?: { integrity?: string; shasum?: string; attestations?: unknown };
+        dependencies?: Record<string, string>;
+        scripts?: Record<string, string>;
+      }>;
       for (const [v, meta] of Object.entries(versions)) {
         const integrity = meta.dist?.integrity ?? meta.dist?.shasum;
         if (integrity) base.hashes[v] = integrity;
       }
       base.latest = (doc['dist-tags'] as Record<string, string> | undefined)?.['latest'];
+      const latest = base.latest ? versions[base.latest] : undefined;
+      if (latest) {
+        base.latestDeps = { ...(latest.dependencies ?? {}) };
+        base.latestInstallScripts = INSTALL_SCRIPTS.filter((k) => latest.scripts?.[k]);
+        base.latestProvenance = Boolean(latest.dist?.attestations);
+      }
       base.maintainers = ((doc['maintainers'] ?? []) as { name?: string }[])
         .map((m) => m.name ?? '')
         .filter(Boolean)
@@ -179,6 +197,47 @@ export function compareSnapshots(prev: Snapshot | undefined, next: Snapshot): Fi
     }
   }
 
+  // Provenance is adopted, not inherited, so its absence on an old package is
+  // normal. Losing it is not: the new release was built somewhere other than
+  // the pipeline that signed the previous one -- the shape of a stolen token.
+  if (prev.latestProvenance === true && next.latestProvenance === false && prev.latest !== next.latest) {
+    findings.push(f({
+      ruleId: 'registry/provenance-dropped',
+      title: `Release ${next.latest} lost the provenance attestation ${prev.latest} had`,
+      severity: 'high',
+      rationale:
+        'The previous release was attested as built by a known CI workflow from a known commit; this one is not. A publish from a developer machine or a leaked token looks exactly like this from the outside.',
+      remediation: 'Hold the upgrade until the maintainer explains why the release was published outside the attested pipeline.',
+    }));
+  }
+
+  const addedScripts = (next.latestInstallScripts ?? []).filter((x) => !(prev.latestInstallScripts ?? []).includes(x));
+  if (prev.latestInstallScripts && addedScripts.length > 0) {
+    findings.push(f({
+      ruleId: 'registry/install-script-added',
+      title: `New install-time script: ${addedScripts.join(', ')}`,
+      severity: 'high',
+      evidence: `${prev.latest} -> ${next.latest}`,
+      rationale:
+        'Lifecycle scripts run during `npm install` / `npx`, before any code review and before the server is even launched. Adding one to an established package is the most common delivery mechanism in npm supply-chain attacks.',
+      remediation: 'Read the script before installing, or install with --ignore-scripts.',
+    }));
+  }
+
+  if (prev.latestDeps && next.latestDeps && prev.latest !== next.latest) {
+    const added = Object.keys(next.latestDeps).filter((d) => !(d in prev.latestDeps!));
+    if (added.length > 0) {
+      findings.push(f({
+        ruleId: 'registry/dependency-added',
+        title: `New dependenc${added.length === 1 ? 'y' : 'ies'} in ${next.latest}: ${added.slice(0, 5).join(', ')}${added.length > 5 ? ` (+${added.length - 5})` : ''}`,
+        severity: 'medium',
+        rationale:
+          'The pin covers this package, not what it pulls in. A new dependency is new code from a new publisher, one level below anything a scan of the server itself would see.',
+        remediation: 'Review the added packages, or watch them as sources of their own.',
+      }));
+    }
+  }
+
   if (!prev.deprecated && next.deprecated) {
     findings.push(f({
       ruleId: 'registry/deprecated',
@@ -234,4 +293,19 @@ export function loadSources(path: string): Source[] {
   if (!doc) return [];
   const list = Array.isArray(doc) ? doc : doc.sources ?? [];
   return list.filter((s) => s && typeof s.name === 'string' && typeof s.spec === 'string');
+}
+
+/**
+ * Build a source list from the registry instead of by hand.
+ *
+ * "Registry-wide" means enumerating what is published, not polling a list
+ * someone remembered to write. npm's search endpoint caps a page at 250.
+ */
+export async function discoverNpm(query: string, size = 50, timeoutMs = 15000): Promise<Source[]> {
+  const url = `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query)}&size=${Math.min(size, 250)}`;
+  const doc = JSON.parse(await getText(url, timeoutMs)) as { objects?: { package?: { name?: string } }[] };
+  return (doc.objects ?? [])
+    .map((o) => o.package?.name)
+    .filter((n): n is string => typeof n === 'string')
+    .map((name) => ({ name, type: 'npm' as const, spec: name }));
 }

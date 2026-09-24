@@ -15,12 +15,16 @@ const exfiltration: Rule = {
   severity: 'critical',
   kinds: ['skill', 'mcp-server', 'mcp-tool'],
   check: (a) => [
-    ...scan(a, /\b(?:curl|wget|http(?:ie)?)\b[^\n]{0,160}(?:\$\(|`|--data[^\n]{0,40}\$|-d\s*["']?\$|\?\w+=\$)/i, {
+    // Command position only (line start or after ; & | ( or a `$ ` prompt), and
+    // only when the substituted command READS local data. A variable in a
+    // query string is an ID; `$(uname)` is platform detection; neither is data.
+    ...scan(a, /(?:^|[;&|(]\s*|\$\s+)(?:sudo\s+)?(?:curl|wget|https?ie|http)\s[^\n]{0,200}?(?:\$\(|`)\s*(?:sudo\s+)?(?:cat|head|tail|env|printenv|base64|tar|zip|gzip|find|ls|history|security|gpg|xxd|od|strings|sqlite3)\b/im, {
       ruleId: 'egress/data-to-remote',
       title: 'Shell command interpolates local output into an outbound request',
       severity: 'critical',
       confidence: 'high',
       only: 'model',
+      onlyFenced: true,
       max: 3,
       rationale:
         'A request whose body or query string is built from command substitution sends whatever that command produces to the remote host. This is exfiltration in its most direct form.',

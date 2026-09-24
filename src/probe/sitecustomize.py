@@ -93,4 +93,50 @@ if _TRACE:
     except Exception:
         pass
 
+    # Taint check on outbound writes. PEP 578 has no audit event for send(), so
+    # the socket methods are wrapped directly; SSLSocket is wrapped too because
+    # its send path is where the plaintext still exists.
+    _CANARIES = [c for c in os.environ.pop("SKILLCHECK_CANARIES", "").split(",") if c]
+
+    def _scan(data, sock):
+        try:
+            if not _CANARIES or data is None:
+                return
+            text = bytes(data).decode("utf-8", "ignore") if not isinstance(data, str) else data
+            try:
+                peer = "%s:%s" % sock.getpeername()[:2]
+            except Exception:
+                peer = "unknown"
+            for c in _CANARIES:
+                if c in text:
+                    _emit("exfil.canary", "%s -> %s" % (c, peer))
+        except Exception:
+            pass
+
+    def _wrap(cls, name):
+        real = getattr(cls, name, None)
+        if real is None:
+            return
+        def patched(self, data, *args, **kwargs):
+            _scan(data, self)
+            return real(self, data, *args, **kwargs)
+        try:
+            setattr(cls, name, patched)
+        except Exception:
+            pass
+
+    if _CANARIES:
+        try:
+            import socket as _socket_mod
+            for _n in ("send", "sendall", "sendto"):
+                _wrap(_socket_mod.socket, _n)
+        except Exception:
+            pass
+        try:
+            import ssl as _ssl_mod
+            for _n in ("send", "sendall", "write"):
+                _wrap(_ssl_mod.SSLSocket, _n)
+        except Exception:
+            pass
+
     _emit("probe.ready", str(os.getpid()))

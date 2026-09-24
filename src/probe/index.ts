@@ -1,7 +1,7 @@
 import type { Artifact, Finding, ProbeResult, Segment } from '../model.js';
 import { rel } from '../util.js';
 import { diffBehaviour, declaredCapabilities } from './differ.js';
-import { fetchRemoteTools, runServer, type McpTool } from './runner.js';
+import { fetchRemoteTools, runServer, type InvokedTool, type McpPrompt, type McpResource, type McpTool } from './runner.js';
 import { createSandbox, detectContainment } from './sandbox.js';
 
 export interface ProbeOptions {
@@ -157,6 +157,7 @@ export async function probeServers(servers: Artifact[], opts: ProbeOptions): Pro
     }
 
     toolArtifacts.push(...toolsToArtifacts(server, outcome.tools, opts.cwd));
+    toolArtifacts.push(...surfacesToArtifacts(server, outcome.prompts, outcome.resources, outcome.invoked, opts.cwd));
   }
 
   return { results, findings, toolArtifacts };
@@ -214,6 +215,58 @@ function schemaStrings(node: unknown, path: string, depth = 0): [string, string]
     } else if (value && typeof value === 'object') {
       out.push(...schemaStrings(value, here, depth + 1));
     }
+  }
+  return out;
+}
+
+/**
+ * Prompts, resources and tool results as artifacts.
+ *
+ * A prompt template is injected into the context verbatim when a user selects
+ * it; a resource's contents are too; and a tool's result is read by the model
+ * the moment it returns. All three were previously invisible to the rules,
+ * which is the gap between "scans MCP tool definitions" and "scans MCP".
+ */
+export function surfacesToArtifacts(
+  server: Artifact, prompts: McpPrompt[], resources: McpResource[], invoked: InvokedTool[], cwd: string,
+): Artifact[] {
+  const base = rel(cwd, server.files[0] ?? server.root);
+  const make = (kind: Artifact['kind'], name: string, segments: Segment[], meta: unknown): Artifact => ({
+    id: `${kind}:${server.name}/${name}`,
+    kind,
+    name: `${server.name}/${name}`,
+    root: server.root,
+    origin: server.origin,
+    files: [`${base}#${server.name}/${name}`],
+    segments,
+    meta: meta as Record<string, unknown>,
+    parent: server.id,
+  });
+  const seg = (name: string, label: string, text: string, visibility: Segment['visibility']): Segment =>
+    ({ file: `${base}#${server.name}/${name}`, label, visibility, text, startLine: 1 });
+
+  const out: Artifact[] = [];
+  for (const p of prompts) {
+    const segments = [seg(p.name, 'prompt description', p.description ?? '', 'both')];
+    for (const a of p.arguments ?? []) {
+      if (a.description) segments.push(seg(p.name, `prompt argument ${a.name}`, a.description, 'model'));
+    }
+    if (p.rendered) segments.push(seg(p.name, 'rendered prompt', p.rendered, 'model'));
+    out.push(make('mcp-prompt', `prompt:${p.name}`, segments, p));
+  }
+  for (const r of resources) {
+    const name = `resource:${r.name ?? r.uri}`;
+    // Definitions are static and pinned; contents are data and scanned only.
+    out.push(make('mcp-resource', name, [
+      seg(name, 'resource description', [r.name, r.description].filter(Boolean).join(': '), 'both'),
+    ], { uri: r.uri, name: r.name, description: r.description }));
+    if (r.content) {
+      out.push(make('mcp-output', `${name}#content`, [seg(name, 'resource content', r.content, 'model')], { uri: r.uri }));
+    }
+  }
+  for (const c of invoked) {
+    if (!c.resultText) continue;
+    out.push(make('mcp-output', `result:${c.name}`, [seg(c.name, `result of ${c.name}()`, c.resultText, 'model')], { tool: c.name }));
   }
   return out;
 }
