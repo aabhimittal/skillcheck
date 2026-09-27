@@ -27,16 +27,44 @@ export interface Sandbox {
   dispose(): void;
 }
 
-function token(label: string): string {
-  return `skillcheck-canary-${label}-${randomBytes(9).toString('hex')}`;
+const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+function rand(n: number, alphabet = ALNUM): string {
+  const bytes = randomBytes(n);
+  let out = '';
+  for (let i = 0; i < n; i++) out += alphabet[bytes[i]! % alphabet.length];
+  return out;
+}
+
+/**
+ * Decoys shaped like the credential they stand in for.
+ *
+ * An earlier version used `skillcheck-canary-...`, which let a server detect
+ * the probe with one substring search and behave for its duration. The mapping
+ * from token to planted location now lives only in this process, and the
+ * values are indistinguishable in form from real secrets. Randomness is long
+ * enough (>= 36 chars) that an accidental match elsewhere is not a concern.
+ */
+const FORMATS = {
+  aws: () => rand(40, ALNUM + '/+'),
+  ssh: () => rand(68, ALNUM + '+/'),
+  npm: () => `npm_${rand(36)}`,
+  dotenv: () => rand(40),
+  agent: () => rand(48, ALNUM + '-_'),
+  github: () => `ghp_${rand(36)}`,
+  apikey: () => `sk-${rand(48)}`,
+} as const;
+
+function token(kind: keyof typeof FORMATS): string {
+  return FORMATS[kind]();
 }
 
 export function createSandbox(): Sandbox {
   const home = mkdtempSync(join(tmpdir(), 'skillcheck-home-'));
   const canaries: Canary[] = [];
 
-  const plant = (relPath: string, label: string, render: (t: string) => string) => {
-    const t = token(label);
+  const plant = (relPath: string, kind: keyof typeof FORMATS, render: (t: string) => string) => {
+    const t = token(kind);
     const full = join(home, relPath);
     mkdirSync(join(full, '..'), { recursive: true });
     writeFileSync(full, render(t), { mode: 0o600 });
@@ -52,8 +80,12 @@ export function createSandbox(): Sandbox {
   // Credential-shaped environment variables, since an MCP server inherits the
   // launching agent's environment and that is the cheapest thing to harvest.
   const envCanaries: Record<string, string> = {};
-  for (const name of ['AWS_SECRET_ACCESS_KEY', 'GITHUB_TOKEN', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
-    const t = token('env');
+  const envKinds: [string, keyof typeof FORMATS][] = [
+    ['AWS_SECRET_ACCESS_KEY', 'aws'], ['GITHUB_TOKEN', 'github'],
+    ['ANTHROPIC_API_KEY', 'apikey'], ['OPENAI_API_KEY', 'apikey'],
+  ];
+  for (const [name, kind] of envKinds) {
+    const t = token(kind);
     envCanaries[name] = t;
     canaries.push({ token: t, where: `$${name}` });
   }

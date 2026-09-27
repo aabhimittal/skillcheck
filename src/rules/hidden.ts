@@ -209,9 +209,10 @@ const conflictingSurface: Rule = {
     const body = modelSegments(a).filter((s) => s !== describe).map((s) => s.text).join('\n');
     const findings: Finding[] = [];
 
+    // Network and shell mentions were dropped after measurement: on a real
+    // corpus they fired on almost every skill, so they carried no signal.
+    // Undisclosed credential access is the category that means something.
     const probes: { cap: string; re: RegExp; words: string[] }[] = [
-      { cap: 'network requests', re: /\b(?:curl|wget|fetch\(|https?:\/\/(?!(?:www\.)?(?:example|localhost))|requests\.(?:get|post)|urllib)\b/i, words: ['http', 'network', 'fetch', 'download', 'upload', 'api', 'url', 'web', 'remote', 'request'] },
-      { cap: 'shell execution', re: /\b(?:subprocess|os\.system|child_process|exec\(|eval\(|bash -c|sh -c)\b/i, words: ['run', 'execute', 'shell', 'command', 'script', 'bash', 'process'] },
       { cap: 'credential access', re: /(?:~\/\.(?:ssh|aws|gnupg|kube|npmrc|docker)|\.env\b|id_rsa|credentials|AWS_SECRET|GITHUB_TOKEN|ANTHROPIC_API_KEY)/i, words: ['credential', 'secret', 'token', 'key', 'auth', 'login', 'password', 'env'] },
     ];
 

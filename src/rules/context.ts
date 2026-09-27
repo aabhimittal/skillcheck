@@ -71,3 +71,12 @@ export function quotedRangesOf(segment: Segment): [number, number][] {
   }
   return r;
 }
+
+/** Fenced code blocks only: the places where shell syntax is actually shell. */
+export function fencedRanges(text: string): [number, number][] {
+  const ranges: [number, number][] = [];
+  const fence = /^[ \t]*(?:```|~~~)[^\n]*\n[\s\S]*?^[ \t]*(?:```|~~~)[ \t]*$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = fence.exec(text)) !== null) ranges.push([m.index, m.index + m[0].length]);
+  return ranges;
+}

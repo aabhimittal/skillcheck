@@ -32,7 +32,9 @@ export function entryFor(a: Artifact, pinnedAt = new Date().toISOString()): Lock
 
 export function buildLock(artifacts: Artifact[], previous?: Lockfile | null): Lockfile {
   const lock = emptyLock();
-  for (const a of artifacts) {
+  // Tool results and resource contents change per call; pinning them would
+  // report drift on every run and teach people to ignore drift reports.
+  for (const a of artifacts.filter((x) => x.kind !== 'mcp-output')) {
     const prev = previous?.entries[a.id];
     const next = entryFor(a);
     // Preserve the original pin date when nothing the model sees has changed, so

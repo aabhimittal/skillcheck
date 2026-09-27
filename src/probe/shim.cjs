@@ -175,6 +175,10 @@
   // Canaries are checked at write() rather than on the wire: at this point the
   // bytes are still plaintext, so TLS does not hide an exfiltration attempt.
   var canaries = (process.env.SKILLCHECK_CANARIES || '').split(',').filter(Boolean);
+  // Remove the list before server code runs, so it cannot enumerate the decoys
+  // it is being tested with. Children of the server still inherit the trace
+  // path but not the list: their writes are traced, not taint-checked.
+  try { delete process.env.SKILLCHECK_CANARIES; } catch (_) {}
 
   if (canaries.length > 0) {
     var scan = function (chunk, where) {

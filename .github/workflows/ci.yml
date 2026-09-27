@@ -34,6 +34,10 @@ jobs:
       - run: npm ci && npm run build
       - name: False positives on the benign corpus
         run: node dist/cli.js bench --corpus corpus/benign --max-fp 0
+      - name: False positives on a real third-party corpus
+        run: |
+          GIT_LFS_SKIP_SMUDGE=1 git clone --depth 1 https://github.com/anthropics/skills /tmp/real-skills
+          node dist/cli.js bench --corpus /tmp/real-skills/skills --max-fp 0
       - name: Detection has not regressed
         run: node dist/cli.js bench --corpus test/fixtures/workspace/.claude/skills
 

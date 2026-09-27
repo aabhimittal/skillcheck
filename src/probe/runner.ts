@@ -35,6 +35,23 @@ export interface InvokedTool {
   resultText?: string;
 }
 
+export interface McpPrompt {
+  name: string;
+  description?: string;
+  arguments?: { name: string; description?: string; required?: boolean }[];
+  /** Rendered messages from prompts/get, for prompts with no required args. */
+  rendered?: string;
+}
+
+export interface McpResource {
+  uri: string;
+  name?: string;
+  description?: string;
+  mimeType?: string;
+  /** Text from resources/read, bounded. */
+  content?: string;
+}
+
 export interface RunOutcome {
   ok: boolean;
   error?: string;
@@ -46,6 +63,8 @@ export interface RunOutcome {
   stderr: string;
   instrumented: boolean;
   invoked: InvokedTool[];
+  prompts: McpPrompt[];
+  resources: McpResource[];
 }
 
 export interface RunOptions {
@@ -99,7 +118,7 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
     );
   } catch (err) {
     discard(dir);
-    return { ok: false, error: `spawn failed: ${(err as Error).message}`, tools: [], events: [], phases: [], durationMs: 0, stderr: '', instrumented: false, invoked: [] };
+    return { ok: false, error: `spawn failed: ${(err as Error).message}`, tools: [], events: [], phases: [], durationMs: 0, stderr: '', instrumented: false, invoked: [], prompts: [], resources: [] };
   }
 
   let stderr = '';
@@ -159,6 +178,8 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
   let error: string | undefined;
   let tools: McpTool[] = [];
   const invoked: InvokedTool[] = [];
+  const prompts: McpPrompt[] = [];
+  const resources: McpResource[] = [];
 
   try {
     const startupFrom = 0;
@@ -173,6 +194,22 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
     const enumFrom = Date.now() - started;
     const result = (await call('tools/list', {}, opts.timeoutMs)) as { tools?: McpTool[] } | null;
     tools = result?.tools ?? [];
+    // Prompts and resources are optional capabilities; a server without them
+    // answers "method not found", which is not a probe failure.
+    const optional = async (method: string, params: unknown) => {
+      try { return await call(method, params, opts.timeoutMs); } catch { return null; }
+    };
+    const plist = (await optional('prompts/list', {})) as { prompts?: McpPrompt[] } | null;
+    for (const p of (plist?.prompts ?? []).slice(0, MAX_SURFACE)) {
+      const needsArgs = (p.arguments ?? []).some((a) => a.required);
+      const got = needsArgs ? null : await optional('prompts/get', { name: p.name, arguments: {} });
+      prompts.push({ ...p, rendered: got ? textOf(got) : undefined });
+    }
+    const rlist = (await optional('resources/list', {})) as { resources?: McpResource[] } | null;
+    for (const r of (rlist?.resources ?? []).slice(0, MAX_SURFACE)) {
+      const got = await optional('resources/read', { uri: r.uri });
+      resources.push({ ...r, content: got ? textOf(got) : undefined });
+    }
     mark('enumerate', enumFrom);
     ok = true;
 
@@ -189,7 +226,7 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
             name: tool.name,
             arguments: synthesiseArgs(tool.inputSchema),
           }, opts.timeoutMs);
-          invoked.push({ name: tool.name, called: true, ok: true, resultText: flatten(res) });
+          invoked.push({ name: tool.name, called: true, ok: true, resultText: textOf(res) });
         } catch (err) {
           // A tool that rejects the synthesised arguments still ran its own
           // argument handling, so the trace for this phase is kept either way.
@@ -223,16 +260,30 @@ export async function runServer(opts: RunOptions): Promise<RunOutcome> {
     stderr,
     instrumented: events.some((e) => (e.kind as string) === 'probe.ready'),
     invoked,
+    prompts,
+    resources,
   };
 }
 
-/** Collapse an MCP tool result into plain text for canary scanning. */
-function flatten(result: unknown): string {
-  try {
-    return JSON.stringify(result).slice(0, 20000);
-  } catch {
-    return String(result).slice(0, 20000);
+/** Cap per surface, so a server listing thousands of resources cannot stall a probe. */
+const MAX_SURFACE = 25;
+
+/**
+ * The text an MCP result actually places in the model context: every `text`
+ * field, wherever it sits (tool content, prompt messages, resource contents).
+ * JSON-stringifying would work for canary matching but would put escaped text
+ * in front of the rules, which then see `\u200b` instead of the character.
+ */
+export function textOf(result: unknown, depth = 0): string {
+  if (depth > 6 || result === null || result === undefined) return '';
+  if (typeof result === 'string') return result;
+  if (Array.isArray(result)) return result.map((r) => textOf(r, depth + 1)).filter(Boolean).join('\n');
+  if (typeof result === 'object') {
+    const o = result as Record<string, unknown>;
+    if (typeof o['text'] === 'string') return (o['text'] as string).slice(0, 20000);
+    return Object.values(o).map((v) => (typeof v === 'object' ? textOf(v, depth + 1) : '')).filter(Boolean).join('\n').slice(0, 20000);
   }
+  return '';
 }
 
 /**

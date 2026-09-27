@@ -55,7 +55,11 @@ test('the sandbox plants decoy credentials and removes them afterwards', () => {
     // real secrets: every token is generated per run and self-identifying.
     const aws = readFileSync(join(sb.home, '.aws', 'credentials'), 'utf8');
     assert.equal(findCanaries(aws, sb.canaries).length, 1);
-    assert.ok(sb.canaries.every((c) => c.token.startsWith('skillcheck-canary-')));
+    // Decoys must not identify the probe: one substring search would let a
+    // server detect it and behave for the duration.
+    assert.ok(sb.canaries.every((c) => !/skillcheck|canary/i.test(c.token)), 'no self-identifying marker');
+    assert.ok(sb.canaries.every((c) => c.token.length >= 36), 'long enough that an accidental match is not a concern');
+    assert.match(sb.canaries.find((c) => c.where === '$GITHUB_TOKEN').token, /^ghp_[A-Za-z0-9]{36}$/, 'shaped like the real thing');
     assert.ok(sb.canaries.some((c) => c.where === '$GITHUB_TOKEN'));
     assert.equal(new Set(sb.canaries.map((c) => c.token)).size, sb.canaries.length, 'tokens are unique');
   } finally {

@@ -17,7 +17,14 @@ export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type Confidence = 'high' | 'medium' | 'low';
 /** `both` marks text that is shown to a human AND loaded into the model's context. */
 export type Visibility = 'user' | 'model' | 'both';
-export type ArtifactKind = 'skill' | 'mcp-server' | 'mcp-tool';
+export type ArtifactKind = 'skill' | 'mcp-server' | 'mcp-tool' | 'mcp-prompt' | 'mcp-resource' | 'mcp-output';
+
+/**
+ * Every model-visible text surface an MCP server exposes. Prompts, resource
+ * contents and tool results reach the context exactly as tool descriptions do,
+ * so they run under the same rules. `mcp-output` is dynamic and never pinned.
+ */
+export const MCP_TEXT_KINDS: ReadonlySet<ArtifactKind> = new Set(['mcp-tool', 'mcp-prompt', 'mcp-resource', 'mcp-output']);
 
 export const SEVERITY_ORDER: Severity[] = ['info', 'low', 'medium', 'high', 'critical'];
 

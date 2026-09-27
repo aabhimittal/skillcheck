@@ -1,6 +1,6 @@
 import type { Artifact, Confidence, Finding, Segment, Severity } from '../model.js';
 import { escapeEvidence } from '../util.js';
-import { isQuoted, quotedRangesOf } from './context.js';
+import { fencedRanges, isQuoted, quotedRangesOf } from './context.js';
 
 export interface MatchSpec {
   ruleId: string;
@@ -18,6 +18,11 @@ export interface MatchSpec {
    * rules about what a document *instructs*, not what it *demonstrates*.
    */
   skipQuoted?: boolean;
+  /**
+   * Only match inside fenced code blocks. For rules about shell *syntax*: in
+   * prose a backtick is Markdown inline code, not command substitution.
+   */
+  onlyFenced?: boolean;
   /** Override the spec's confidence per artifact, e.g. when disclosed. */
   confidenceFor?: (a: Artifact) => Confidence;
 }
@@ -46,10 +51,12 @@ export function scan(a: Artifact, pattern: RegExp, spec: MatchSpec): Finding[] {
   for (const segment of segments) {
     const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g');
     const quoted = spec.skipQuoted ? quotedRangesOf(segment) : [];
+    const fenced = spec.onlyFenced ? fencedRanges(segment.text) : [];
     let m: RegExpExecArray | null;
     while ((m = re.exec(segment.text)) !== null) {
       if (m[0].length === 0) { re.lastIndex++; continue; }
       if (spec.skipQuoted && isQuoted(quoted, m.index)) continue;
+      if (spec.onlyFenced && !isQuoted(fenced, m.index)) continue;
       const line = lineOf(segment, m.index);
       // The same text can appear in two segments of one file (front-matter and
       // description both carry it); one location is one finding.
